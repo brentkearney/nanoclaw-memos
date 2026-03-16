@@ -5,10 +5,12 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
+  MEMOS_API_URL,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { addMemory, searchMemories } from './memos-client.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -180,7 +182,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  let prompt = formatMessages(missedMessages, TIMEZONE);
+
+  // Auto-recall: inject relevant memories from MemOS before agent runs
+  if (MEMOS_API_URL) {
+    const lastMessage = missedMessages[missedMessages.length - 1].content;
+    const memories = await searchMemories(lastMessage);
+    if (memories.length > 0) {
+      const memoriesXml = memories
+        .map(
+          (m) => `<memory relevance="${m.score.toFixed(2)}">${m.text}</memory>`,
+        )
+        .join('\n');
+      prompt = `<memories>\n${memoriesXml}\n</memories>\n${prompt}`;
+      logger.info(
+        { group: group.name, count: memories.length },
+        'Injected MemOS memories into prompt',
+      );
+    }
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -211,6 +231,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  const userText = missedMessages.map((m) => m.content).join('\n');
+  const responseChunks: string[] = [];
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -225,6 +247,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        responseChunks.push(text);
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -241,6 +264,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  // Auto-capture: store the full exchange in MemOS once after container exits (fire-and-forget).
+  // Capture whenever output was sent, even if the container exited with an error (e.g. SIGKILL
+  // from idle timeout or manual stop) — the conversation is still worth storing.
+  if (MEMOS_API_URL && outputSentToUser && responseChunks.length > 0) {
+    const fullResponse = responseChunks.join('\n');
+    addMemory(`User: ${userText}\nAssistant: ${fullResponse}`).catch((err) =>
+      logger.warn({ err, group: group.name }, 'MemOS auto-capture failed'),
+    );
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —

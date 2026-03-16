@@ -6,7 +6,13 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'CONTAINER_NETWORK',
+  'MEMOS_API_URL',
+  'MEMOS_USER_ID',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -39,6 +45,8 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+export const CONTAINER_NETWORK =
+  process.env.CONTAINER_NETWORK || envConfig.CONTAINER_NETWORK || '';
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,
@@ -61,6 +69,14 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// MemOS memory backend — set MEMOS_API_URL to enable (e.g. http://localhost:8000/product)
+export const MEMOS_API_URL =
+  process.env.MEMOS_API_URL || envConfig.MEMOS_API_URL || '';
+export const MEMOS_USER_ID =
+  process.env.MEMOS_USER_ID ||
+  envConfig.MEMOS_USER_ID ||
+  ASSISTANT_NAME.toLowerCase();
 
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
